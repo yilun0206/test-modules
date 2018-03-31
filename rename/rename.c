@@ -10,23 +10,7 @@
 #include <linux/mutex.h>
 #include <linux/mount.h>
 
-static long do_rename(const char *oldname, const char *newname)
-{
-	struct path oldparent;
-	unsigned int lookup_flags = LOOKUP_FOLLOW;
-	int error;
 
-	error = kern_path(oldname, lookup_flags, &oldparent);
-	printk("error = %d\n", error);
-	if (error)
-		goto out;
-	printk("name: %s\n", oldparent.dentry->d_name.name);
-	path_put(&oldparent);
-out:
-	return error;
-}
-
-#if 0
 static long do_rename(const char *oldname, const char *newname)
 {
 	struct dentry *old_dir, *new_dir;
@@ -35,7 +19,7 @@ static long do_rename(const char *oldname, const char *newname)
 	struct path oldparent, newparent, old, new;
 	unsigned int lookup_flags = 0;
 	bool should_retry = false;
-	int error;
+	long error;
 retry:
 	error = kern_path(oldname, lookup_flags | LOOKUP_PARENT, &oldparent);
 	if (error)
@@ -58,6 +42,8 @@ retry:
 
 	trap = lock_rename(new_dir, old_dir);
 
+	lookup_flags |= LOOKUP_FOLLOW;
+
 	error = kern_path(oldname, lookup_flags, &old);
 	if (error)
 		goto exit3;
@@ -68,10 +54,12 @@ retry:
 	if (old_dentry == trap)
 		goto exit4;
 
-	error = kern_path(newname, lookup_flags | LOOKUP_EMPTY, &new);
-	if (error)
+	new_dentry = kern_path_create(AT_FDCWD, newname,
+				&new, lookup_flags | LOOKUP_EMPTY);
+	if (IS_ERR(new_dentry)) {
+		error = PTR_ERR(new_dentry);
 		goto exit4;
-	new_dentry = new.dentry;
+	}
 	
 	/* target should not be an ancestor of source */
 	error = -ENOTEMPTY;
@@ -102,7 +90,6 @@ exit1:
 exit:
 	return error;
 }
-#endif
 
 static int __init temp_init_module(void)
 {
