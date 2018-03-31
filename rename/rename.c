@@ -12,12 +12,12 @@
 
 static long do_rename(const char *oldname, const char *newname)
 {
-	struct path oldparent, newparent, old, new;
-	unsigned int lookup_flags = 0;
+	struct path oldparent;
+	unsigned int lookup_flags = LOOKUP_FOLLOW;
 	int error;
 
 	error = kern_path(oldname, lookup_flags, &oldparent);
-	printk("error = %d\n, name = %s\n", error, oldparent.dentry->d_name.name);
+	printk("error = %d\n", error);
 	path_put(&oldparent);
 	return error;
 }
