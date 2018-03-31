@@ -18,7 +18,11 @@ static long do_rename(const char *oldname, const char *newname)
 
 	error = kern_path(oldname, lookup_flags, &oldparent);
 	printk("error = %d\n", error);
+	if (error)
+		goto out;
+	printk("name: %s\n", oldparent.dentry->d_name.name);
 	path_put(&oldparent);
+out:
 	return error;
 }
 
