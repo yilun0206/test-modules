@@ -9,85 +9,99 @@
 #include <linux/namei.h>
 #include <linux/mutex.h>
 #include <linux/mount.h>
+#include <linux/cred.h>
 
-
-static long do_rename(const char *oldname, const char *newname)
+/* port from linux /fs/namei.c, func: do_unlinkat
+ * @ pathname: absolute path of directory to be created
+ */
+static long do_unlink(const char *pathname)
 {
-	struct dentry *old_dir, *new_dir;
-	struct dentry *old_dentry, *new_dentry;
-	struct dentry *trap;
-	struct path oldparent, newparent, old, new;
-	unsigned int lookup_flags = 0;
-	bool should_retry = false;
 	long error;
-retry:
-	error = kern_path(oldname, lookup_flags | LOOKUP_PARENT, &oldparent);
-	if (error)
-		goto exit;
+	struct dentry *dentry;
+	struct inode *dir;
+	struct path path;
+	struct inode *tmp;
+	unsigned int lookup_flags = LOOKUP_FOLLOW;
 
-	error = kern_path(newname, lookup_flags | LOOKUP_PARENT, &newparent);
+	error = kern_path(pathname, lookup_flags, &path);
 	if (error)
-		goto exit1;
+		return error;
+
+	dentry = path.dentry;
+	dir = dentry->d_parent->d_inode;
+
+	mutex_lock(&dir->i_mutex);
+	//error = vfs_unlink(dir, dentry, &tmp);
+	error = vfs_unlink(dir, dentry);
+	mutex_unlock(&dir->i_mutex);
+	path_put(&path);
+
+	return error;
+}
+
+static long do_link(const char *oldname, const char *newname, int flags)
+{
+	struct dentry *new_dentry;
+	struct path old_path, new_path;
+	int how = 0;
+	long error;
+
+	if ((flags & ~(AT_SYMLINK_FOLLOW | AT_EMPTY_PATH)) != 0)
+		return -EINVAL;
+	/*
+	 * To use null names we require CAP_DAC_READ_SEARCH
+	 * This ensures that not everyone will be able to create
+	 * handlink using the passed filedescriptor.
+	 */
+	if (flags & AT_EMPTY_PATH) {
+		if (!capable(CAP_DAC_READ_SEARCH))
+			return -ENOENT;
+		how = LOOKUP_EMPTY;
+	}
+
+	if (flags & AT_SYMLINK_FOLLOW)
+		how |= LOOKUP_FOLLOW;
+retry:
+	error = kern_path(oldname, how, &old_path);
+	if (error)
+		return error;
+
+	new_dentry = kern_path_create(AT_FDCWD, newname, &new_path,
+					(how & LOOKUP_REVAL));
+	error = PTR_ERR(new_dentry);
+	if (IS_ERR(new_dentry))
+		goto out;
 
 	error = -EXDEV;
-	if (oldparent.mnt != newparent.mnt)
-		goto exit2;
-
-	old_dir = oldparent.dentry;
-	new_dir = newparent.dentry;
-
-	error = mnt_want_write(oldparent.mnt);
-	if (error)
-		goto exit2;
-
-	trap = lock_rename(new_dir, old_dir);
-
-	lookup_flags |= LOOKUP_FOLLOW;
-
-	error = kern_path(oldname, lookup_flags, &old);
-	if (error)
-		goto exit3;
-	old_dentry = old.dentry;
+	if (old_path.mnt != new_path.mnt)
+		goto out_dput;
 	
-	/* source should not be ancestor of target */
-	error = -EINVAL;
-	if (old_dentry == trap)
-		goto exit4;
-
-	new_dentry = kern_path_create(AT_FDCWD, newname,
-				&new, lookup_flags | LOOKUP_EMPTY);
-	if (IS_ERR(new_dentry)) {
-		error = PTR_ERR(new_dentry);
-		goto exit4;
-	}
-	
-	/* target should not be an ancestor of source */
-	error = -ENOTEMPTY;
-	if (new_dentry == trap)
-		goto exit5;
-
-	error = vfs_rename(old_dir->d_inode, old_dentry,
-				   new_dir->d_inode, new_dentry);
-
-exit5:
-	path_put(&new);
-exit4:
-	path_put(&old);
-exit3:
-	unlock_rename(new_dir, old_dir);
-	mnt_drop_write(oldparent.mnt);
-exit2:
-	if (retry_estale(error, lookup_flags))
-		should_retry = true;
-	path_put(&newparent);
-exit1:
-	path_put(&oldparent);
-	if (should_retry) {
-		should_retry = false;
-		lookup_flags |= LOOKUP_REVAL;
+	error = vfs_link(old_path.dentry, new_path.dentry->d_inode, new_dentry);
+out_dput:
+	done_path_create(&new_path, new_dentry);
+	if (retry_estale(error, how)) {
+		how |= LOOKUP_REVAL;
 		goto retry;
 	}
-exit:
+out:
+	path_put(&old_path);
+
+	return error;
+}
+
+static long do_rename(char *oldname, char *newname)
+{
+	long error;
+
+	error = do_unlink(newname);
+	if (error && (error != -ENOENT))
+		goto out;
+	error = do_link(oldname, newname, 0);
+	if (error)
+		goto out;
+	error = do_unlink(oldname);
+
+out:
 	return error;
 }
 
@@ -95,7 +109,9 @@ static int __init temp_init_module(void)
 {
 	long ret = 0;
 
-	ret = do_rename("/home/yilun/testfile", "/home/yilun/testfile2");
+	ret = do_rename("/home/yilun/testdir/tmpfile1", "/home/yilun/testdir/tmpfile2");
+	if (ret)
+		printk("ret = %ld\n", ret);
 	
 	return ret;
 }
